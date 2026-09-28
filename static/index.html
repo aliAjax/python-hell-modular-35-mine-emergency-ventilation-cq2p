@@ -1,11 +1,153 @@
 <!doctype html>
 <html lang="zh-CN">
-<head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1"><title>矿井应急避险与通风协调</title>
-<style>body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;color:#1f2937}main{max-width:860px;margin:auto}pre{background:#f3f4f6;padding:1rem;border-radius:8px;overflow-x:auto}button{padding:.5rem .8rem;cursor:pointer}</style></head>
-<body><main><h1>矿井应急避险与通风协调</h1><p>这是最小演示页面，主要操作通过JSON API完成。</p><p><button onclick="checkHealth()">检查服务状态</button></p><pre id="result">等待操作</pre>
-<h2>常用接口</h2><pre>GET  /health
-GET  /api/&lt;kind&gt;
-POST /api/&lt;kind&gt;
+<head>
+<meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>矿井应急避险与通风协调</title>
+<style>
+body{font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;margin:2rem;color:#1f2937}
+main{max-width:920px;margin:auto}
+pre{background:#f3f4f6;padding:1rem;border-radius:8px;overflow-x:auto;font-size:.85rem}
+button{padding:.5rem .8rem;cursor:pointer;border-radius:6px;border:1px solid #9ca3af;background:#fff}
+button.primary{background:#2563eb;color:#fff;border-color:#2563eb}
+input,select{padding:.45rem;border:1px solid #9ca3af;border-radius:6px;width:100%;box-sizing:border-box}
+label{display:block;font-size:.85rem;margin:.6rem 0 .2rem;color:#374151}
+.row{display:flex;gap:1rem}.row>div{flex:1}
+.card{border:1px solid #d1d5db;border-radius:10px;padding:1.2rem;margin:1rem 0}
+.badge{display:inline-block;padding:.15rem .6rem;border-radius:999px;font-size:.8rem;font-weight:600}
+.approved{background:#dcfce7;color:#166534}.denied{background:#fee2e2;color:#991b1b}
+.pass{color:#166534}.fail{color:#991b1b;font-weight:600}.warning{color:#b45309;font-weight:600}
+table{border-collapse:collapse;width:100%;font-size:.85rem}td,th{border:1px solid #e5e7eb;padding:.4rem .6rem;text-align:left}
+h2{margin-top:2rem}
+.hint{color:#6b7280;font-size:.82rem}
+</style>
+</head>
+<body><main>
+<h1>井下送风许可</h1>
+<p class="hint">安全员选择停运设备并录入气体检测；系统结合传感器与人员撤离状态逐项给出许可原因。氧气&lt;19.5%、甲烷≥1%、检测早于停机、检测超过30分钟或人员未撤离均不放行。</p>
+
+<div class="card">
+  <strong>身份</strong>
+  <div class="row">
+    <div><label>用户ID</label><input id="userId" value="safety-01"></div>
+    <div><label>角色</label>
+      <select id="role">
+        <option value="safety" selected>safety（安全员）</option>
+        <option value="admin">admin</option>
+        <option value="dispatcher">dispatcher</option>
+        <option value="field">field</option>
+        <option value="viewer">viewer</option>
+      </select>
+    </div>
+    <div style="flex:0 0 auto;align-self:flex-end"><button onclick="checkHealth()">检查服务</button></div>
+  </div>
+</div>
+
+<div class="card">
+  <strong>开具送风许可</strong>
+  <div class="row">
+    <div style="flex:2"><label>停运设备（风机）</label>
+      <select id="ventId"><option value="">加载中…</option></select>
+      <p class="hint" id="ventInfo"></p>
+    </div>
+  </div>
+  <div class="row">
+    <div><label>检测时间（ISO-8601，默认当前时间）</label><input id="testedAt" placeholder="留空=现在"></div>
+    <div><label>氧气读数 %（≥19.5）</label><input id="oxygen" value="20.9"></div>
+    <div><label>甲烷读数 %（&lt;1.0）</label><input id="methane" value="0.1"></div>
+  </div>
+  <p><button class="primary" onclick="submitPermit()">提交许可申请</button>
+     <button onclick="loadVents()">刷新设备列表</button></p>
+  <div id="permitResult"></div>
+</div>
+
+<div class="card">
+  <strong>许可记录</strong>
+  <p><button onclick="loadPermits()">查看全部许可</button></p>
+  <div id="permitList"></div>
+</div>
+
+<div class="card">
+  <strong>原始接口</strong>
+  <pre>GET  /api/ventilation-permits
+POST /api/ventilation-permits
 GET  /api/entities/&lt;id&gt;
-POST /api/entities/&lt;id&gt;/actions</pre></main>
-<script>async function checkHealth(){const r=await fetch('/health');document.getElementById('result').textContent=JSON.stringify(await r.json(),null,2)}</script></body></html>
+POST /api/entities/&lt;id&gt;/actions  {"action":"restore","data":{"permit_id":"..."}}
+POST /api/entities/&lt;id&gt;/actions  {"action":"stop"}</pre>
+</div>
+<pre id="result">等待操作</pre>
+</main>
+<script>
+function headers(){return {'Content-Type':'application/json','X-User-Id':userId.value,'X-Role':role.value}}
+function nowIsoMinus(min){const d=new Date(Date.now()-(min||0)*60000);return d.toISOString().slice(0,16)}
+async function api(path,opts){const r=await fetch(path,opts);const j=await r.json();if(!r.ok)throw new Error((j.type||'Error')+': '+(j.error||r.status));return j}
+async function checkHealth(){const j=await fetch('/health').then(r=>r.json());document.getElementById('result').textContent=JSON.stringify(j,null,2)}
+
+async function loadVents(){
+  const sel=ventId;sel.innerHTML='';
+  const items=(await api('/api/ventilation?status=stopped')).items;
+  if(!items.length){sel.innerHTML='<option value="">（当前没有停运设备）</option>';ventInfo.textContent='';return}
+  for(const v of items){
+    const o=document.createElement('option');
+    o.value=v.id;o.textContent=v.data.name+' — 区域 '+v.data.area_code+'（停机于 '+(v.data.stopped_at||'?')+'）';
+    sel.appendChild(o);
+  }
+  showVentInfo();
+}
+function showVentInfo(){
+  const o=ventId.selectedOptions[0];ventInfo.textContent=o?o.textContent:'';
+}
+document.getElementById('ventId').addEventListener('change',showVentInfo);
+
+async function submitPermit(){
+  permitResult.innerHTML='<p class="hint">评估中…</p>';
+  const body={
+    ventilation_id:ventId.value,
+    tested_at:testedAt.value||new Date().toISOString(),
+    oxygen_pct:parseFloat(oxygen.value),
+    methane_pct:parseFloat(methane.value)
+  };
+  try{
+    const p=await api('/api/ventilation-permits',{method:'POST',headers:headers(),body:JSON.stringify(body)});
+    renderPermit(p,true);
+  }catch(e){permitResult.innerHTML='<p class="denied badge">'+e.message+'</p>'}
+}
+
+function renderPermit(p,showStart){
+  const rows=p.data.checks.map(c=>
+    '<tr><td>'+c.label+'</td><td class="'+c.result+'">'+({pass:'✓ 通过',fail:'✗ 不通过',warning:'⚠ 预警'})[c.result]+'</td><td>'+c.detail+'</td></tr>'
+  ).join('');
+  permitResult.innerHTML=
+    '<p><span class="badge '+p.status+'">'+(p.status==='approved'?'许可通过 ✓':'许可拒绝 ✗')+'</span> '+
+    '许可ID：'+p.id+'（区域 '+p.data.area_code+'，签发人 '+p.data.issued_by+'）</p>'+
+    '<table><tr><th>核查项</th><th>结果</th><th>详情</th></tr>'+rows+'</table>'+
+    (showStart&&p.status==='approved'
+      ? '<p>检测时间 '+p.data.tested_at+'，30分钟内有效。<button class="primary" onclick="startFan(\''+p.data.ventilation_id+'\',\''+p.id+'\')">凭此许可启动风机</button></p>'
+      : showStart ? '<p class="hint">未放行，不能启动风机；请整改后重新检测申请。</p>' : '');
+}
+
+async function startFan(ventId,permitId){
+  try{
+    const v=await api('/api/entities/'+ventId+'/actions',{method:'POST',headers:headers(),
+      body:JSON.stringify({action:'restore',data:{permit_id:permitId}})});
+    result.textContent='风机已启动：\n'+JSON.stringify(v,null,2);
+    loadVents();loadPermits();
+  }catch(e){result.textContent=e.message}
+}
+
+async function loadPermits(){
+  const items=(await api('/api/ventilation-permits')).items;
+  if(!items.length){permitList.innerHTML='<p class="hint">暂无许可记录</p>';return}
+  permitList.innerHTML='<table><tr><th>许可</th><th>设备/区域</th><th>检测时间</th><th>O₂</th><th>CH₄</th><th>结果</th><th></th></tr>'+
+    items.map(p=>'<tr><td>'+p.id.slice(0,8)+'</td><td>'+p.data.area_code+'</td><td>'+p.data.tested_at+'</td><td>'+p.data.oxygen_pct+'%</td><td>'+p.data.methane_pct+'%</td>'+
+      '<td><span class="badge '+p.status+'">'+p.status+'</span></td>'+
+      '<td><button onclick=\'viewPermit("'+p.id+'")\'>查看逐项原因</button></td></tr>').join('')+'</table>';
+}
+async function viewPermit(id){
+  const p=await api('/api/entities/'+id);
+  renderPermit(p,false);
+  permitResult.scrollIntoView({behavior:'smooth'});
+}
+
+loadVents();loadPermits();
+</script>
+</body></html>
