@@ -1,11 +1,16 @@
 import tempfile
 import unittest
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from src.domain import Actor
 from src.repository import SQLiteRepository
 from src.rules import RuleEngine
 from src.service import DomainService
+
+
+def iso(minutes_from_now=0):
+    return (datetime.now(timezone.utc) + timedelta(minutes=minutes_from_now)).isoformat(timespec="seconds")
 
 
 class WorkflowTest(unittest.TestCase):
@@ -32,7 +37,7 @@ class WorkflowTest(unittest.TestCase):
 
         worker = self.create("worker", {"name": "Li Wei", "location_code": "M-01", "team": "A"})
         worker = self.act(worker, "mark_missing")
-        worker = self.act(worker, "locate", {"located_at": "2026-09-27T10:00:00Z"})
+        worker = self.act(worker, "locate", {"located_at": iso()})
         worker = self.act(worker, "rescue", {"incident_id": incident["id"]})
         self.assertEqual(worker["status"], "rescued")
 
@@ -40,10 +45,19 @@ class WorkflowTest(unittest.TestCase):
         self.assertEqual(sensor["data"]["severity"], "alarm")
         sensor = self.act(sensor, "raise_alarm")
         self.assertEqual(sensor["status"], "alarm")
+        sensor = self.act(sensor, "clear")
+        self.assertEqual(sensor["status"], "normal")
 
         vent = self.create("ventilation", {"name": "fan-1", "area_code": "M-01", "capacity": 100})
         vent = self.act(vent, "stop", {})
-        vent = self.act(vent, "restore", {"tested_at": "2026-09-27T11:00:00Z"})
+        permit = self.create("air_permit", {
+            "ventilation_id": vent["id"],
+            "tested_at": iso(),
+            "oxygen_pct": 20.8,
+            "methane_pct": 0.2,
+        })
+        self.assertEqual(permit["status"], "approved")
+        vent = self.act(vent, "restore", {"permit_id": permit["id"]})
         self.assertEqual(vent["status"], "running")
 
         task = self.create("task", {"incident_id": incident["id"], "task_type": "rescue", "target": "worker-1", "dedupe_key": "rescue-1"})
